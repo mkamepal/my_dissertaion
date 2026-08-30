@@ -4,3 +4,4 @@ tensorflow_federated
 numpy
 matplotlib
 hdbscan
+openpyxl

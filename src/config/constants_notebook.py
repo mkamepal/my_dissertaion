@@ -5,7 +5,7 @@ FEDERATED_ROUNDS = 30
 STORE_RESULTS = True
 
 ## total num of the malicious clients
-NUM_MALICIOUS = 3
+NUM_MALICIOUS = 9
 MAX_FAKE_RATIO = 0.7
 
 ## label flip attack constant
