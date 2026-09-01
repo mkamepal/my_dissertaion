@@ -86,4 +86,6 @@ MAGNITUDE_THRESHOLD = 0.20
 
 # Maximum allowed accuracy drop from head client
 # 0.10 = 10 percentage points
-VALIDATION_ACCURACY_TOLERANCE = 0.10
+VALIDATION_ACCURACY_TOLERANCE = 0.1
+
+USE_TRUST_FILTERING = True

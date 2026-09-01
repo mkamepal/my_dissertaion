@@ -189,11 +189,12 @@ def build_federated_process(input_spec, learning_rate=0.01):
         client_outputs = (tff.federated_map(client_update_fn,(federated_dataset, server_weights_at_client)))
         client_trainable_weights = (client_outputs[0])
         client_metrics = (client_outputs[1])
-        mean_trainable_weights = (tff.federated_mean(client_trainable_weights))
+        #mean_trainable_weights = (tff.federated_mean(client_trainable_weights))
         metric_sums = (tff.federated_sum(client_metrics))
-        new_server_weights = (tff.federated_map(build_server_weights, mean_trainable_weights))
+        #new_server_weights = (tff.federated_map(build_server_weights, mean_trainable_weights))
 
         round_metrics = (tff.federated_map(finalize_round_metrics,metric_sums))
-        return new_server_weights, client_trainable_weights,round_metrics
+        #return new_server_weights, client_trainable_weights,round_metrics
+        return client_trainable_weights, round_metrics
 
     return initialize_fn, next_fn
