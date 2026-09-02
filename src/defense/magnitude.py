@@ -11,7 +11,7 @@ def vector_magnitude(vector):
 
 def calculate_magnitudes(client_weight_deltas):
     """
-    Calculate magnitude for every client in every round.
+    Calculate the L2 magnitude of each client's flattened weight delta.
     Returns:
     {
         "round0weights": {

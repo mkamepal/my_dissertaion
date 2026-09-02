@@ -63,7 +63,8 @@ DIRECTION_WEIGHT = 0.25
 MAGNITUDE_WEIGHT = 0.25
 VALIDATION_WEIGHT = 0.25
 
-TRUST_THRESHOLD = 0.50
+# Require at least three of the four equally weighted defense checks.
+TRUST_THRESHOLD = 0.51
 
 ## Data Dir path
 DATA_DIR = '/home/mahesh/Desktop/Dissertation/tf_fd_cancer_fakeclients_detection/data/Kidney Cancer'
@@ -77,15 +78,15 @@ TRUST_WEIGHT_DIRECTION = 0.25
 TRUST_WEIGHT_MAGNITUDE = 0.25
 TRUST_WEIGHT_VALIDATION = 0.25
 
-# Angle in degrees
-DIRECTION_THRESHOLD = 30.0
+# Clients with an angle strictly below this value are accepted.
+DIRECTION_THRESHOLD = 90
 
-# Maximum allowed relative magnitude difference
-# 0.20 = 20%
-MAGNITUDE_THRESHOLD = 0.20
+# Maximum allowed relative magnitude difference from client_0.
+# 0.25 accepts values from 75% through 125% of client_0's magnitude.
+MAGNITUDE_THRESHOLD = 0.25
 
-# Maximum allowed accuracy drop from head client
-# 0.10 = 10 percentage points
-VALIDATION_ACCURACY_TOLERANCE = 0.1
+# Maximum allowed validation-accuracy drop from the head client.
+# 0.06 = 6 percentage points
+VALIDATION_ACCURACY_TOLERANCE = 0.06
 
 USE_TRUST_FILTERING = True

@@ -5,6 +5,7 @@ import random
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras.backend as K
+import subprocess
 from openpyxl import Workbook
 
 from src.config import constants
@@ -104,6 +105,64 @@ def aggregate_all_clients(server_weights, client_trained_weights):
     return new_server_weights
 
 
+##TensorFlow Federated is starting separate worker_binary processes, and those worker processes are not shutting down when your main experiment finishes.
+def cleanup_experiment():
+    print("\nCleaning experiment resources...")
+
+    try:
+        result = subprocess.run(
+            [
+                "pkill",
+                "-TERM",
+                "-u",
+                str(os.getuid()),
+                "-f",
+                r"tensorflow_federated.*worker_binary",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode == 0:
+            print("TFF worker processes terminated.")
+        elif result.returncode == 1:
+            print("No remaining TFF worker processes found.")
+        else:
+            print(
+                "TFF worker cleanup warning: "
+                f"pkill returned {result.returncode}: {result.stderr.strip()}"
+            )
+
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"TFF worker cleanup warning: {error}")
+
+    K.clear_session()
+    gc.collect()
+    print("Cleanup completed.")
+
+def aggregate_client_metrics(client_metrics, selected_clients):
+    """Calculate example-weighted metrics for only the selected clients."""
+    selected_indices = [int(client_id.split("_")[1]) for client_id in selected_clients]
+
+    loss_sum = sum(float(client_metrics[index]["loss_sum"]) for index in selected_indices)
+    correct_sum = sum(
+        float(client_metrics[index]["correct_sum"]) for index in selected_indices
+    )
+    num_examples = sum(
+        float(client_metrics[index]["num_examples"]) for index in selected_indices
+    )
+
+    if num_examples == 0:
+        return {"train_loss": float("nan"), "train_accuracy": float("nan")}
+
+    return {
+        "train_loss": loss_sum / num_examples,
+        "train_accuracy": correct_sum / num_examples,
+    }
+
+
 def _round_number(round_key):
     return int(round_key.removeprefix("round").removesuffix("weights")) + 1
 
@@ -145,6 +204,8 @@ def _save_results_file(file_path, sheet_name, headers, rows, widths):
 def save_experiment_results_to_excel(
     round_losses,
     round_accuracies,
+    global_model_losses,
+    global_model_accuracies,
     all_magnitudes,
     all_head_angles,
     all_hdbscan_results,
@@ -153,43 +214,85 @@ def save_experiment_results_to_excel(
     all_selected_clients,
     file_paths=None,
 ):
-    """Save each accumulated result type to a separate Excel workbook."""
+    """Save global metrics and, when filtering is enabled, defense results."""
     output_dir = constants.RESULTS_DIR
     os.makedirs(output_dir, exist_ok=True)
     if file_paths is None:
+        trust_status = str(constants.USE_TRUST_FILTERING).lower()
         suffix = (
             f"clients_{constants.NUM_CLIENTS}"
             f"_malicious_{constants.NUM_MALICIOUS}"
-            f"_rounds_{constants.FEDERATED_ROUNDS}.xlsx"
+            f"_rounds_{constants.FEDERATED_ROUNDS}"
+            f"_trust_is_{trust_status}.xlsx"
         )
+        result_file_prefixes = {"round_metrics": "round_metrics"}
+        if constants.USE_TRUST_FILTERING:
+            result_file_prefixes.update(
+                {
+                    "magnitudes": "magnitudes",
+                    "directions": "directions",
+                    "hdbscan": "hdbscan",
+                    "validation": "validation",
+                    "trust_scores": "trust_scores",
+                    "selected_clients": "selected",
+                }
+            )
         file_paths = {
             result_type: _next_available_file_path(
-                os.path.join(output_dir, f"{file_prefix}_{suffix}")
+                os.path.join(
+                    output_dir,
+                    (
+                        f"globalmodel_results_{constants.NUM_MALICIOUS}"
+                        f"_trust_is_{trust_status}.xlsx"
+                        if result_type == "round_metrics"
+                        else f"{file_prefix}_{suffix}"
+                    ),
+                )
             )
-            for result_type, file_prefix in {
-                "round_metrics": "round_metrics",
-                "magnitudes": "magnitudes",
-                "directions": "directions",
-                "hdbscan": "hdbscan",
-                "validation": "validation",
-                "trust_scores": "trust_scores",
-                "selected_clients": "selected",
-            }.items()
+            for result_type, file_prefix in result_file_prefixes.items()
         }
 
     metric_rows = [
-        [round_idx, float(loss), float(accuracy)]
-        for round_idx, (loss, accuracy) in enumerate(
-            zip(round_losses, round_accuracies), start=1
+        [
+            round_idx,
+            float(train_loss),
+            float(train_accuracy),
+            float(global_loss),
+            float(global_accuracy),
+        ]
+        for round_idx, (
+            train_loss,
+            train_accuracy,
+            global_loss,
+            global_accuracy,
+        ) in enumerate(
+            zip(
+                round_losses,
+                round_accuracies,
+                global_model_losses,
+                global_model_accuracies,
+            ),
+            start=1,
         )
     ]
     _save_results_file(
         file_paths["round_metrics"],
         "Round Metrics",
-        ["Round", "Loss", "Accuracy"],
+        [
+            "Round",
+            "Training Loss",
+            "Training Accuracy",
+            "Global Model Test Loss",
+            "Global Model Test Accuracy",
+        ],
         metric_rows,
-        {"A": 12, "B": 20, "C": 20},
+        {"A": 12, "B": 20, "C": 22, "D": 25, "E": 29},
     )
+
+    if not constants.USE_TRUST_FILTERING:
+        print("\nExperiment result file saved to:")
+        print(file_paths["round_metrics"])
+        return file_paths
 
     magnitude_rows = []
     for round_key, clients in all_magnitudes.items():
@@ -364,6 +467,8 @@ def main():
     ]
     round_losses = []
     round_accuracies = []
+    global_model_losses = []
+    global_model_accuracies = []
     all_magnitudes = {}
     all_head_angles = {}
     all_hdbscan_results = {}
@@ -378,31 +483,44 @@ def main():
         # CURRENT GLOBAL MODEL W_t
         server_weights_before_round = server_weights
         print("\nTraining clients...")
-        (client_trained_weights, round_metrics) = next_fn(
+        client_trained_weights, client_metrics, round_metrics = next_fn(
             server_weights, client_datasets_list
         )
-        loss_value = float(round_metrics["train_loss"])
-        accuracy_value = float(round_metrics["train_accuracy"])
-        round_losses.append(loss_value)
-        round_accuracies.append(accuracy_value)
-        print(f"Loss: " f"{loss_value:.4f}")
-        print(f"Accuracy: " f"{accuracy_value:.4f}")
         if constants.USE_TRUST_FILTERING:
             print("\nTrust-based filtering ENABLED.")
             # Defense functions expect a round list.
             # We process one round at a time.
             current_round_client_weights = [client_trained_weights]
+            # A client update is measured from the model that the server sent
+            # at the start of this round: delta_i = local_model_i - W_t.
+            # Using the all-client mean here measures a centered residual
+            # instead. That reference is contaminated by malicious clients and
+            # caused their residual magnitudes to converge toward client_0's
+            # magnitude in later rounds.
             current_round_server_weights = [server_weights_before_round]
             print("\nCalculating client deltas...")
             client_deltas = calculate_client_deltas(
                 captured_client_weights=current_round_client_weights,
                 server_weights_before_round=current_round_server_weights,
             )
-            print("\nCalculating magnitudes...")
+            print("\nCalculating delta magnitudes...")
             magnitudes = calculate_magnitudes(client_deltas)
             print("\nCalculating head-client angles...")
+            # Match fakeclients_segregation.ipynb's direction section. The
+            # notebook reassigns client_weights = client_weight_deltas, where
+            # those deltas are centered on the post-round all-client FedAvg
+            # model. Keep this reference direction-only so magnitude and
+            # HDBSCAN continue using updates measured from W_t.
+            direction_reference_server = aggregate_all_clients(
+                server_weights=server_weights_before_round,
+                client_trained_weights=client_trained_weights,
+            )
+            direction_client_deltas = calculate_client_deltas(
+                captured_client_weights=current_round_client_weights,
+                server_weights_before_round=[direction_reference_server],
+            )
             head_angles = calculate_head_client_angles(
-                client_deltas, head_client="client_0"
+                direction_client_deltas, head_client="client_0"
             )
             print("\nRunning HDBSCAN...")
             hdbscan_results = calculate_hdbscan_results(
@@ -471,6 +589,10 @@ def main():
                 client_trained_weights=client_trained_weights,
                 selected_clients=selected_clients,
             )
+            reported_round_metrics = aggregate_client_metrics(
+                client_metrics=client_metrics,
+                selected_clients=selected_clients,
+            )
             print(
                 f"\nQualified clients: "
                 f"{len(selected_clients)}"
@@ -478,6 +600,8 @@ def main():
                 f"{config.num_clients}"
             )
             del client_deltas
+            del direction_client_deltas
+            del direction_reference_server
             del magnitudes
             del head_angles
             del hdbscan_results
@@ -491,10 +615,35 @@ def main():
                 server_weights=server_weights_before_round,
                 client_trained_weights=client_trained_weights,
             )
+            # With filtering disabled, every client is selected, so the round
+            # metrics already returned by TFF are the correct aggregate.
+            reported_round_metrics = round_metrics
+
+        loss_value = float(reported_round_metrics["train_loss"])
+        accuracy_value = float(reported_round_metrics["train_accuracy"])
+        round_losses.append(loss_value)
+        round_accuracies.append(accuracy_value)
+        print("\nRound results for aggregated clients:")
+        print(f"Loss: {loss_value:.4f}")
+        print(f"Accuracy: {accuracy_value:.4f}")
+
+        global_results = evaluate_global_model(
+            server_weights=server_weights,
+            test_dataset=client_test_datasets["client_0"],
+        )
+        global_loss = float(global_results["loss"])
+        global_accuracy = float(global_results["accuracy"])
+        global_model_losses.append(global_loss)
+        global_model_accuracies.append(global_accuracy)
+        print("\nGlobal model test results:")
+        print(f"Global Model Loss: {global_loss:.4f}")
+        print(f"Global Model Accuracy: {global_accuracy:.4f}")
         print(f"\nRound " f"{round_idx + 1} " f"completed.")
         results_file_paths = save_experiment_results_to_excel(
             round_losses=round_losses,
             round_accuracies=round_accuracies,
+            global_model_losses=global_model_losses,
+            global_model_accuracies=global_model_accuracies,
             all_magnitudes=all_magnitudes,
             all_head_angles=all_head_angles,
             all_hdbscan_results=all_hdbscan_results,
@@ -537,4 +686,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        cleanup_experiment()

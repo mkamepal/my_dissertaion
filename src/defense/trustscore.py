@@ -79,7 +79,7 @@ def calculate_direction_scores(head_angles, threshold):
     """
     Binary direction score.
 
-    D_i = 1 if angle <= threshold
+    D_i = 1 if angle < threshold
     D_i = 0 otherwise
     """
 
@@ -91,7 +91,7 @@ def calculate_direction_scores(head_angles, threshold):
 
         for client_id, angle in clients.items():
 
-            if angle <= threshold:
+            if angle < threshold:
 
                 score = 1
 
@@ -110,26 +110,17 @@ def calculate_direction_scores(head_angles, threshold):
 
 
 def calculate_magnitude_scores(
-    magnitudes, head_client="client_0", threshold=0.20, eps=1e-12
+    magnitudes, head_client="client_0", threshold=0.25
 ):
     """
-    Binary magnitude score.
+    Compare each raw delta magnitude with the head client's magnitude.
 
-    Uses relative magnitude difference:
-
-        |m_i - m_h|
-        -----------
-          |m_h|
-
-    M_i = 1 if relative difference <= threshold
-    M_i = 0 otherwise
-
-    Example:
-        threshold = 0.20
-
-    means the client magnitude can differ by up to
-    20% from the head-client magnitude.
+    With a threshold of 0.25, a client receives 1 when its magnitude is
+    within the inclusive range [0.75 * head, 1.25 * head].
+    Otherwise, it receives 0.
     """
+    if not 0 <= threshold <= 1:
+        raise ValueError("Magnitude threshold must be between 0 and 1.")
 
     magnitude_scores = {}
 
@@ -138,28 +129,21 @@ def calculate_magnitude_scores(
         magnitude_scores[round_key] = {}
 
         if head_client not in clients:
-
             raise ValueError(f"{head_client} missing in {round_key}")
 
         head_magnitude = float(clients[head_client])
+        lower_bound = head_magnitude * (1 - threshold)
+        upper_bound = head_magnitude * (1 + threshold)
 
         for client_id, magnitude in clients.items():
-
-            magnitude = float(magnitude)
-
-            relative_difference = abs(magnitude - head_magnitude) / (
-                abs(head_magnitude) + eps
+            value = float(magnitude)
+            within_bounds = lower_bound <= value <= upper_bound
+            on_boundary = np.isclose(value, lower_bound) or np.isclose(
+                value, upper_bound
             )
-
-            if relative_difference <= threshold:
-
-                score = 1
-
-            else:
-
-                score = 0
-
-            magnitude_scores[round_key][client_id] = score
+            magnitude_scores[round_key][client_id] = int(
+                within_bounds or on_boundary
+            )
 
     return magnitude_scores
 
@@ -296,7 +280,9 @@ def calculate_trust_scores(
     )
 
     magnitude_scores = calculate_magnitude_scores(
-        magnitudes, head_client=head_client, threshold=magnitude_threshold
+        magnitudes,
+        head_client=head_client,
+        threshold=magnitude_threshold,
     )
 
     validation_scores = calculate_validation_scores(
